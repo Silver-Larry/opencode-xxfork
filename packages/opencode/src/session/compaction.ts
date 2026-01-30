@@ -225,7 +225,7 @@ export namespace SessionCompaction {
       { context: [], prompt: undefined },
     )
     const defaultPrompt =
-      "Provide a detailed prompt for continuing our conversation above. Focus on information that would be helpful for continuing the conversation, including what we did, what we're doing, which files we're working on, and what we're going to do next considering new session will not have access to our conversation."
+      "Please read the complete conversation above and generate a summary according to the guidelines. The new session will not have access to our conversation history, so the summary must contain all key information needed to continue the work."
     const promptText = compacting.prompt ?? [defaultPrompt, ...compacting.context].join("\n\n")
     const result = await processor.process({
       user: userMessage,
