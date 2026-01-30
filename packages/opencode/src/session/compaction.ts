@@ -14,9 +14,95 @@ import { fn } from "@/util/fn"
 import { Agent } from "@/agent/agent"
 import { Plugin } from "@/plugin"
 import { Config } from "@/config/config"
+import type { ModelMessage } from "ai"
 
 export namespace SessionCompaction {
   const log = Log.create({ service: "session.compaction" })
+
+  /**
+   * Safely stringify a value for display in sanitized tool messages.
+   * Handles circular references and limits output size.
+   */
+  function safeStringify(value: unknown): string {
+    if (typeof value === "string") return value
+    if (value === undefined || value === null) return ""
+    try {
+      return JSON.stringify(value) ?? ""
+    } catch {
+      return "[unserializable]"
+    }
+  }
+
+  /**
+   * Sanitizes ModelMessage array by converting tool-call and tool-result parts to plain text.
+   * This prevents 400 errors from strict API proxies that reject tool messages without tool definitions.
+   * Only used during compaction where tools: {} is intentionally empty.
+   *
+   * Per Oracle recommendation:
+   * - Convert tool-call/tool-result parts in assistant messages to text parts
+   * - Convert role:'tool' messages to role:'user' text messages (preserve order, don't filter)
+   * - Preserve toolCallId for context linkage
+   */
+  function extractOutput(output: unknown): string {
+    if (!output || typeof output !== "object") return safeStringify(output)
+    const o = output as Record<string, unknown>
+    if (o.type === "text" && typeof o.value === "string") return o.value
+    if (o.type === "json") return safeStringify(o.value)
+    return safeStringify(output)
+  }
+
+  function sanitizeToolMessages(messages: ModelMessage[]): ModelMessage[] {
+    return messages.map((msg): ModelMessage => {
+      // Handle role:'tool' messages by converting to user text message
+      if (msg.role === "tool") {
+        const texts: string[] = []
+        if (Array.isArray(msg.content)) {
+          for (const part of msg.content) {
+            if (!part || typeof part !== "object") continue
+            if (part.type === "tool-result") {
+              const id = "toolCallId" in part ? part.toolCallId : ""
+              const name = "toolName" in part ? part.toolName : "unknown"
+              const raw = extractOutput("output" in part ? part.output : "")
+              const result = raw.length > 300 ? raw.slice(0, 300) + "...[truncated]" : raw
+              texts.push(`[Tool Result${id ? ` (${id})` : ""} ${name}: ${result}]`)
+            }
+          }
+        }
+        return {
+          role: "user",
+          content: texts.join("\n") || "[Tool result converted to text]",
+        }
+      }
+
+      if (typeof msg.content === "string") return msg
+      if (!Array.isArray(msg.content)) return msg
+
+      // Only process assistant messages' tool parts
+      if (msg.role === "assistant") {
+        const newContent = msg.content.map((part) => {
+          if (!part || typeof part !== "object") return part
+          if (part.type === "tool-call") {
+            const id = "toolCallId" in part ? part.toolCallId : ""
+            const name = "toolName" in part ? part.toolName : "unknown"
+            const raw = safeStringify("input" in part ? part.input : "")
+            const input = raw.length > 200 ? raw.slice(0, 200) + "...[truncated]" : raw
+            return { type: "text" as const, text: `[Tool Call${id ? ` (${id})` : ""}: ${name}(${input})]` }
+          }
+          if (part.type === "tool-result") {
+            const id = "toolCallId" in part ? part.toolCallId : ""
+            const name = "toolName" in part ? part.toolName : "unknown"
+            const raw = extractOutput("output" in part ? part.output : "")
+            const result = raw.length > 300 ? raw.slice(0, 300) + "...[truncated]" : raw
+            return { type: "text" as const, text: `[Tool Result${id ? ` (${id})` : ""} ${name}: ${result}]` }
+          }
+          return part
+        })
+        return { ...msg, content: newContent }
+      }
+
+      return msg
+    })
+  }
 
   export const Event = {
     Compacted: BusEvent.define(
@@ -149,7 +235,7 @@ export namespace SessionCompaction {
       tools: {},
       system: [],
       messages: [
-        ...MessageV2.toModelMessages(input.messages, model),
+        ...sanitizeToolMessages(MessageV2.toModelMessages(input.messages, model)),
         {
           role: "user",
           content: [
