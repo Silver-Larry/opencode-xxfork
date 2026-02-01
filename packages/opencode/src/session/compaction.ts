@@ -62,8 +62,7 @@ export namespace SessionCompaction {
             if (part.type === "tool-result") {
               const id = "toolCallId" in part ? part.toolCallId : ""
               const name = "toolName" in part ? part.toolName : "unknown"
-              const raw = extractOutput("output" in part ? part.output : "")
-              const result = raw.length > 300 ? raw.slice(0, 300) + "...[truncated]" : raw
+              const result = extractOutput("output" in part ? part.output : "")
               texts.push(`[Tool Result${id ? ` (${id})` : ""} ${name}: ${result}]`)
             }
           }
@@ -84,15 +83,13 @@ export namespace SessionCompaction {
           if (part.type === "tool-call") {
             const id = "toolCallId" in part ? part.toolCallId : ""
             const name = "toolName" in part ? part.toolName : "unknown"
-            const raw = safeStringify("input" in part ? part.input : "")
-            const input = raw.length > 200 ? raw.slice(0, 200) + "...[truncated]" : raw
+            const input = safeStringify("input" in part ? part.input : "")
             return { type: "text" as const, text: `[Tool Call${id ? ` (${id})` : ""}: ${name}(${input})]` }
           }
           if (part.type === "tool-result") {
             const id = "toolCallId" in part ? part.toolCallId : ""
             const name = "toolName" in part ? part.toolName : "unknown"
-            const raw = extractOutput("output" in part ? part.output : "")
-            const result = raw.length > 300 ? raw.slice(0, 300) + "...[truncated]" : raw
+            const result = extractOutput("output" in part ? part.output : "")
             return { type: "text" as const, text: `[Tool Result${id ? ` (${id})` : ""} ${name}: ${result}]` }
           }
           return part
