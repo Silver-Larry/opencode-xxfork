@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import path from "path"
 import { SessionCompaction } from "../../src/session/compaction"
+import { MessageV2 } from "../../src/session/message-v2"
 import { Token } from "../../src/util/token"
 import { Instance } from "../../src/project/instance"
 import { Log } from "../../src/util/log"
@@ -37,6 +38,29 @@ function createModel(opts: {
     api: { npm: "@ai-sdk/anthropic" },
     options: {},
   } as Provider.Model
+}
+
+function message(id: string, size: number): MessageV2.WithParts {
+  const sessionID = "session"
+  return {
+    info: {
+      id,
+      sessionID,
+      role: "user",
+      time: { created: 0 },
+      agent: "agent",
+      model: { providerID: "test", modelID: "test" },
+    },
+    parts: [
+      {
+        id: `part-${id}`,
+        sessionID,
+        messageID: id,
+        type: "text",
+        text: "x".repeat(size),
+      },
+    ],
+  }
 }
 
 describe("session.compaction.isOverflow", () => {
@@ -143,6 +167,79 @@ describe("session.compaction.isOverflow", () => {
         expect(await SessionCompaction.isOverflow({ tokens, model })).toBe(false)
       },
     })
+  })
+})
+
+describe("session.compaction.selectAnchor", () => {
+  test("keeps exact suffix budget with anchor at m18", () => {
+    const sizes = Array.from({ length: 20 }, (_, index) => {
+      if (index === 17) return 60_000
+      if (index === 18) return 60_000
+      if (index === 19) return 40_000
+      return 4
+    })
+    const messages = sizes.map((size, index) => message(`m${index + 1}`, size))
+    const result = SessionCompaction.selectAnchor({
+      messages,
+      summaryBudget: SessionCompaction.SUMMARY_BUDGET,
+      preserveBudget: SessionCompaction.PRESERVE_BUDGET,
+    })
+
+    expect(result.anchorMessageID).toBe("m18")
+    expect(result.suffixMessages.map((item) => item.info.id)).toEqual(["m18", "m19", "m20"])
+  })
+
+  test("does not duplicate suffix IDs in prefix", () => {
+    const sizes = Array.from({ length: 20 }, (_, index) => {
+      if (index === 17) return 60_000
+      if (index === 18) return 60_000
+      if (index === 19) return 40_000
+      return 4
+    })
+    const messages = sizes.map((size, index) => message(`m${index + 1}`, size))
+    const result = SessionCompaction.selectAnchor({
+      messages,
+      summaryBudget: SessionCompaction.SUMMARY_BUDGET,
+      preserveBudget: SessionCompaction.PRESERVE_BUDGET,
+    })
+
+    const prefixIDs = new Set(result.prefixMessages.map((item) => item.info.id))
+    const suffixIDs = result.suffixMessages.map((item) => item.info.id)
+
+    expect(suffixIDs.every((id) => !prefixIDs.has(id))).toBe(true)
+  })
+
+  test("stops when the next message would exceed budget", () => {
+    const sizes = Array.from({ length: 20 }, (_, index) => {
+      if (index === 17) return 60_000
+      if (index === 18) return 60_000
+      if (index === 19) return 40_000
+      return 4
+    })
+    const messages = sizes.map((size, index) => message(`m${index + 1}`, size))
+    const result = SessionCompaction.selectAnchor({
+      messages,
+      summaryBudget: SessionCompaction.SUMMARY_BUDGET,
+      preserveBudget: SessionCompaction.PRESERVE_BUDGET,
+    })
+
+    expect(result.suffixMessages.map((item) => item.info.id).includes("m17")).toBe(false)
+  })
+
+  test("keeps newest message even if it exceeds budget", () => {
+    const sizes = Array.from({ length: 20 }, (_, index) => {
+      if (index === 19) return 160_004
+      return 4
+    })
+    const messages = sizes.map((size, index) => message(`m${index + 1}`, size))
+    const result = SessionCompaction.selectAnchor({
+      messages,
+      summaryBudget: SessionCompaction.SUMMARY_BUDGET,
+      preserveBudget: SessionCompaction.PRESERVE_BUDGET,
+    })
+
+    expect(result.anchorMessageID).toBe("m20")
+    expect(result.suffixMessages.map((item) => item.info.id)).toEqual(["m20"])
   })
 })
 
