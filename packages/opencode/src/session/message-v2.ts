@@ -159,6 +159,7 @@ export namespace MessageV2 {
   export const CompactionPart = PartBase.extend({
     type: z.literal("compaction"),
     auto: z.boolean(),
+    anchorMessageID: z.string().optional(),
   }).meta({
     ref: "CompactionPart",
   })
@@ -644,16 +645,32 @@ export namespace MessageV2 {
   export async function filterCompacted(stream: AsyncIterable<MessageV2.WithParts>) {
     const result = [] as MessageV2.WithParts[]
     const completed = new Set<string>()
+    const state = { anchor: "", marker: -1, found: false }
     for await (const msg of stream) {
       result.push(msg)
+      if (state.anchor && msg.info.id === state.anchor) {
+        state.found = true
+        break
+      }
       if (
+        state.marker < 0 &&
         msg.info.role === "user" &&
         completed.has(msg.info.id) &&
         msg.parts.some((part) => part.type === "compaction")
-      )
-        break
+      ) {
+        state.marker = result.length - 1
+        const part = msg.parts.find((part) => part.type === "compaction") as MessageV2.CompactionPart | undefined
+        const anchor = part?.anchorMessageID
+        if (!anchor) break
+        state.anchor = anchor
+        if (msg.info.id === anchor) {
+          state.found = true
+          break
+        }
+      }
       if (msg.info.role === "assistant" && msg.info.summary && msg.info.finish) completed.add(msg.info.parentID)
     }
+    if (state.anchor && !state.found && state.marker >= 0) result.length = state.marker + 1
     result.reverse()
     return result
   }
