@@ -124,7 +124,62 @@ export namespace SessionCompaction {
   export const PRUNE_MINIMUM = 20_000
   export const PRUNE_PROTECT = 40_000
 
+  export const SUMMARY_BUDGET = 4_000
+  export const PRESERVE_BUDGET = 40_000
+
   const PRUNE_PROTECTED_TOOLS = ["skill"]
+
+  function messagePayload(message: MessageV2.WithParts) {
+    const parts = [] as string[]
+    for (const part of message.parts) {
+      if (part.type === "text") {
+        if (part.synthetic) continue
+        if (part.ignored) continue
+        parts.push(part.text)
+      }
+      if (part.type === "tool") {
+        if (part.state.status !== "completed") continue
+        const output = part.state.time.compacted ? "[Old tool result content cleared]" : part.state.output
+        parts.push(output)
+      }
+    }
+    return parts.join("\n")
+  }
+
+  function messageTokens(message: MessageV2.WithParts) {
+    return Token.estimate(messagePayload(message))
+  }
+
+  export function selectAnchor(input: {
+    messages: MessageV2.WithParts[]
+    summaryBudget: number
+    preserveBudget: number
+  }) {
+    const budget = input.preserveBudget + input.summaryBudget
+    const preserveBudget = budget - input.summaryBudget
+    const suffixMessages = [] as MessageV2.WithParts[]
+    const state = { total: 0 }
+    const list = [...input.messages].reverse()
+
+    for (const message of list) {
+      const estimate = messageTokens(message)
+      if (suffixMessages.length === 0) {
+        suffixMessages.unshift(message)
+        state.total = estimate
+        if (estimate > preserveBudget) break
+        continue
+      }
+      if (state.total + estimate > preserveBudget) break
+      suffixMessages.unshift(message)
+      state.total += estimate
+    }
+
+    const prefixCount = input.messages.length - suffixMessages.length
+    const prefixMessages = input.messages.slice(0, prefixCount)
+    const anchorMessageID = suffixMessages.length > 0 ? suffixMessages[0].info.id : ""
+
+    return { anchorMessageID, prefixMessages, suffixMessages }
+  }
 
   // goes backwards through parts until there are 40_000 tokens worth of tool
   // calls. then erases output of previous tool calls. idea is to throw away old
@@ -180,6 +235,13 @@ export namespace SessionCompaction {
     auto: boolean
   }) {
     const userMessage = input.messages.findLast((m) => m.info.id === input.parentID)!.info as MessageV2.User
+
+    const { anchorMessageID, prefixMessages } = selectAnchor({
+      messages: input.messages,
+      summaryBudget: SUMMARY_BUDGET,
+      preserveBudget: PRESERVE_BUDGET,
+    })
+
     const agent = await Agent.get("compaction")
     const model = agent.model
       ? await Provider.getModel(agent.model.providerID, agent.model.modelID)
@@ -209,6 +271,17 @@ export namespace SessionCompaction {
         created: Date.now(),
       },
     })) as MessageV2.Assistant
+    const parentMessage = await MessageV2.get({
+      sessionID: input.sessionID,
+      messageID: input.parentID,
+    })
+    const compactionPart = parentMessage.parts.find((part) => part.type === "compaction")
+    if (compactionPart) {
+      await Session.updatePart({
+        ...compactionPart,
+        anchorMessageID,
+      })
+    }
     const processor = SessionProcessor.create({
       assistantMessage: msg,
       sessionID: input.sessionID,
@@ -232,7 +305,7 @@ export namespace SessionCompaction {
       tools: {},
       system: [],
       messages: [
-        ...sanitizeToolMessages(MessageV2.toModelMessages(input.messages, model)),
+        ...sanitizeToolMessages(MessageV2.toModelMessages(prefixMessages, model)),
         {
           role: "user",
           content: [
