@@ -120,3 +120,76 @@ git log upstream/dev --oneline | grep -i compact
 # 对比我的 compaction.ts 和上游的差异
 git diff HEAD..upstream/dev -- packages/opencode/src/session/compaction.ts
 ```
+
+---
+
+## 编译工作流程
+
+合并上游代码后，需要重新编译 `opencodexx`。
+
+### 编译步骤
+
+```bash
+# 1. 进入 opencode 包目录
+cd packages/opencode
+
+# 2. 安装依赖（如果需要）
+bun install
+
+# 3. 编译新版本（设置版本号环境变量）
+OPENCODE_VERSION="X.X.X.xxfork" bun run build --single
+
+# 4. 安装到本地 bin 目录
+cp dist/opencode-darwin-arm64/bin/opencode ~/.local/bin/opencodexx
+
+# 5. 重新签名（macOS 必须，否则会被 kill）
+codesign --force --sign - ~/.local/bin/opencodexx
+xattr -cr ~/.local/bin/opencodexx
+
+# 6. 验证版本
+~/.local/bin/opencodexx --version
+```
+
+### 一键编译脚本
+
+```bash
+# 在项目根目录执行
+cd packages/opencode && \
+OPENCODE_VERSION="X.X.X.xxfork" bun run build --single && \
+cp dist/opencode-darwin-arm64/bin/opencode ~/.local/bin/opencodexx && \
+codesign --force --sign - ~/.local/bin/opencodexx && \
+xattr -cr ~/.local/bin/opencodexx && \
+~/.local/bin/opencodexx --version
+```
+
+### 版本号命名规范
+
+- 格式：`{上游版本}.xxfork`
+- 示例：`1.1.53.xxfork`
+- 上游版本号可在 `packages/opencode/package.json` 中查看
+
+### 编译历史
+
+| 日期       | 版本号        | 备注                    |
+| ---------- | ------------- | ----------------------- |
+| 2026-02-03 | 1.1.49.xxfork | 首次编译                |
+| 2026-02-06 | 1.1.53.xxfork | 合并上游 v1.1.53 后编译 |
+
+### 常见问题
+
+**Q: 运行时被 kill (`zsh: killed`)**
+
+A: macOS 安全机制导致，需要重新签名：
+
+```bash
+codesign --force --sign - ~/.local/bin/opencodexx
+xattr -cr ~/.local/bin/opencodexx
+```
+
+**Q: 编译时找不到模块**
+
+A: 先安装依赖：
+
+```bash
+cd packages/opencode && bun install
+```
